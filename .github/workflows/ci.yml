@@ -72,9 +72,56 @@ jobs:
 
       - name: Run tests
         run: python manage.py test
+  
+  docker:
+    name: docker (${{ matrix.service }})
+    needs: [frontend, django]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [auth_service, game_service, frontend]
+    env:
+      # Images are built on every run (validates the Dockerfiles) but only
+      # pushed on a push to develop, never from pull requests.
+      PUSH: ${{ github.event_name == 'push' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: env.PUSH == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Generate image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKER_USERNAME || 'local' }}/quiz-battle-${{ matrix.service }}
+          tags: |
+            type=raw,value=latest
+            type=ref,event=branch
+            type=sha
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.service }}
+          push: ${{ env.PUSH == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
   notify-slack:
-    needs: [frontend, django]
+    needs: [frontend, django, docker]
     runs-on: ubuntu-latest
     # Always report, but skip fork PRs where secrets are unavailable.
     if: >-
@@ -93,6 +140,21 @@ jobs:
             echo "color=#36a64f" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Build Docker Hub image links
+        id: images
+        # Only after images were actually pushed (push event, docker job passed).
+        if: github.event_name == 'push' && needs.docker.result == 'success'
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+        run: |
+          # Literal \n sequences keep the value valid inside the JSON payload below.
+          links='\nImages pushed to Docker Hub:'
+          for service in auth_service game_service frontend; do
+            name="$DOCKER_USERNAME/quiz-battle-$service"
+            links="$links\n• <https://hub.docker.com/r/$name|$name>"
+          done
+          echo "links=$links" >> "$GITHUB_OUTPUT"
+
       - name: Send Slack notification
         uses: slackapi/slack-github-action@v1.26.0
         with:
@@ -102,7 +164,7 @@ jobs:
                 {
                   "color": "${{ steps.status.outputs.color }}",
                   "title": "CI Pipeline Execution: ${{ steps.status.outputs.conclusion }}",
-                  "text": "Repository: *${{ github.repository }}*\nBranch/PR: *${{ github.ref_name }}*\nTriggered by: *${{ github.actor }}*\nResult: *${{ steps.status.outputs.conclusion }}*",
+                  "text": "Repository: *${{ github.repository }}*\nBranch/PR: *${{ github.ref_name }}*\nTriggered by: *${{ github.actor }}*\nResult: *${{ steps.status.outputs.conclusion }}*${{ steps.images.outputs.links }}",
                   "actions": [
                     {
                       "type": "button",
