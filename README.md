@@ -101,7 +101,7 @@ trust each other.
 
 | Job | What it does |
 | --- | --- |
-| `frontend` | `npm ci` and `npm run build` |
+| `frontend` | `npm ci`, `npm run lint` (ESLint + eslint-plugin-vue), `npm run build` |
 | `django` | For `auth_service` and `game_service`: flake8, `makemigrations --check`, `manage.py test` |
 | `docker` | Builds an image per service; on a push (not a PR) also pushes it to Docker Hub |
 | `notify-slack` | Posts the result to Slack, with the Docker Hub image links after a push |

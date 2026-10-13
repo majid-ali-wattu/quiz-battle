@@ -26,6 +26,7 @@ before pushing.
 | `slackapi/slack-github-action@v1.26.0` | Slack notification (`notify-slack` job) |
 | `flake8` | Python lint (syntax errors and undefined names only) |
 | Django test runner (`manage.py test`) | Auth and game service tests |
+| ESLint + `eslint-plugin-vue` (`npm run lint`) | Frontend lint (essential Vue rules, no warnings allowed) |
 | `vite build` (`npm run build`) | Frontend build check |
 
 ## Install
