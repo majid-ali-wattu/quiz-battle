@@ -97,7 +97,7 @@ trust each other.
 
 ## CI/CD
 
-`.github/workflows/ci.yml` runs on pushes to `container-tests`:
+`.github/workflows/quiz-battle-ci.yml` runs on pushes to `container-tests`:
 
 | Job | What it does |
 | --- | --- |

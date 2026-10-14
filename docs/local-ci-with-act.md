@@ -1,7 +1,7 @@
 # Testing CI locally with act
 
 [act](https://github.com/nektos/act) runs the GitHub Actions workflow in
-`.github/workflows/ci.yml` inside Docker containers, so you can check it
+`.github/workflows/quiz-battle-ci.yml` inside Docker containers, so you can check it
 before pushing.
 
 ## Tools and libraries
