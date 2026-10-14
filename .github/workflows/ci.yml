@@ -126,9 +126,10 @@ jobs:
   notify-slack:
     needs: [frontend, django, docker]
     runs-on: ubuntu-latest
-    # Always report, but skip fork PRs where secrets are unavailable.
+    # Report on success or failure, but not when the run is cancelled (e.g.
+    # superseded by a newer push), and skip fork PRs where secrets are unavailable.
     if: >-
-      always() &&
+      !cancelled() &&
       (github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository)
     steps:
@@ -159,6 +160,7 @@ jobs:
           echo "links=$links" >> "$GITHUB_OUTPUT"
 
       - name: Send Slack notification
+        continue-on-error: true
         uses: slackapi/slack-github-action@v1.26.0
         with:
           payload: |
