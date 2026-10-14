@@ -1,0 +1,236 @@
+name: CI
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+    branches: [develop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+  django:
+    name: ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [auth_service, game_service]
+    defaults:
+      run:
+        working-directory: ${{ matrix.service }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ${{ matrix.service }}/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install flake8
+
+      - name: Lint (syntax errors and undefined names)
+        run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Check for missing migrations
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Run tests
+        run: python manage.py test
+  
+  docker:
+    name: docker (${{ matrix.service }})
+    needs: [frontend, django]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [auth_service, game_service, frontend]
+    env:
+      # Images are built on every run (validates the Dockerfiles) but only
+      # pushed on a push to develop, never from pull requests.
+      PUSH: ${{ github.event_name == 'push' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: env.PUSH == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Generate image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKER_USERNAME || 'local' }}/quiz-battle-${{ matrix.service }}
+          tags: |
+            type=raw,value=latest
+            type=ref,event=branch
+            type=sha
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.service }}
+          push: ${{ env.PUSH == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+  container-tests:
+    name: container tests (${{ matrix.service }})
+    needs: [frontend, django]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [auth_service, game_service]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.service }}
+          load: true
+          tags: ${{ matrix.service }}:test
+          cache-from: type=gha,scope=${{ matrix.service }}
+
+      # Runs against the image's own Python and installed packages, so a
+      # dependency missing from the image fails here.
+      - name: Run tests inside the image
+        run: docker run --rm ${{ matrix.service }}:test python manage.py test
+
+  compose-smoke:
+    needs: [frontend, django]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Start stack
+        run: docker compose up -d --build
+
+      - name: Smoke test
+        run: ./scripts/smoke-test.sh
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Stop stack
+        if: always()
+        run: docker compose down -v
+
+  notify-slack:
+    needs: [frontend, django, docker, container-tests, compose-smoke]
+    runs-on: ubuntu-latest
+    # Report on success or failure, but not when the run is cancelled (e.g.
+    # superseded by a newer push), and skip fork PRs where secrets are unavailable.
+    if: >-
+      !cancelled() &&
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository)
+    steps:
+      - name: Determine pipeline status
+        id: status
+        run: |
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "conclusion=failure" >> "$GITHUB_OUTPUT"
+            echo "color=#ff0000" >> "$GITHUB_OUTPUT"
+          else
+            echo "conclusion=success" >> "$GITHUB_OUTPUT"
+            echo "color=#36a64f" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build Docker Hub image links
+        id: images
+        # Only after images were actually pushed (push event, docker job passed).
+        if: github.event_name == 'push' && needs.docker.result == 'success'
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+        run: |
+          # Literal \n sequences keep the value valid inside the JSON payload below.
+          links='\nImages pushed to Docker Hub:'
+          for service in auth_service game_service frontend; do
+            name="$DOCKER_USERNAME/quiz-battle-$service"
+            links="$links\n• <https://hub.docker.com/r/$name|$name>"
+          done
+          echo "links=$links" >> "$GITHUB_OUTPUT"
+
+      - name: Send Slack notification
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "attachments": [
+                {
+                  "color": "${{ steps.status.outputs.color }}",
+                  "title": "CI Pipeline Execution: ${{ steps.status.outputs.conclusion }}",
+                  "text": "Repository: *${{ github.repository }}*\nBranch/PR: *${{ github.ref_name }}*\nTriggered by: *${{ github.actor }}*\nResult: *${{ steps.status.outputs.conclusion }}*${{ steps.images.outputs.links }}",
+                  "actions": [
+                    {
+                      "type": "button",
+                      "text": "View Run",
+                      "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

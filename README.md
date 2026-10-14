@@ -95,6 +95,27 @@ Set `JWT_SECRET`/`INTERNAL_API_KEY` env vars identically in both shells if
 you change them from the defaults — they must match for the two services to
 trust each other.
 
+## CI/CD
+
+`.github/workflows/ci.yml` runs on pushes and pull requests to `develop`:
+
+| Job | What it does |
+| --- | --- |
+| `frontend` | `npm ci`, `npm run lint` (ESLint + eslint-plugin-vue), `npm run build` |
+| `django` | For `auth_service` and `game_service`: flake8, `makemigrations --check`, `manage.py test` |
+| `docker` | Builds an image per service; on a push (not a PR) also pushes it to Docker Hub |
+| `notify-slack` | Posts the result to Slack, with the Docker Hub image links after a push |
+
+Images are pushed as `<DOCKER_USERNAME>/quiz-battle-<service>` for
+`auth_service`, `game_service` and `frontend`, tagged `latest`, `develop` and
+`sha-<short sha>`.
+
+Required GitHub repo secrets (Settings → Secrets and variables → Actions):
+`DOCKER_USERNAME`, `DOCKERHUB_TOKEN`, `SLACK_WEBHOOK_URL`. Keep them in a local
+`.env` (git-ignored) if you need them for local runs.
+
+To test the workflow locally, see [docs/local-ci-with-act.md](docs/local-ci-with-act.md).
+
 ## Extending it later
 
 - Swap SQLite for Postgres per service (just change `DATABASES` — nothing
