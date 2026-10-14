@@ -62,8 +62,8 @@ act push --container-architecture linux/amd64       # Apple Silicon
 
 ## Notes
 
-- The workflow triggers on pushes and PRs to `develop`. `act push` checks the
-  current branch, so run it from `develop` or no workflow will match.
+- The workflow triggers on pushes to `container-tests`. `act push` checks the
+  current branch, so run it from `container-tests` or no workflow will match.
 - `act push` runs the `docker` job with `push` enabled, so it logs in and
   pushes to Docker Hub if `--secret-file .env` supplies `DOCKER_USERNAME` and
   `DOCKERHUB_TOKEN`. To only test the build, use `act pull_request -j docker`.

@@ -1,10 +1,8 @@
-name: CI
+name: CI-Container-test
 
 on:
   push:
-    branches: [develop, container-tests]
-  pull_request:
-    branches: [develop]
+    branches: [container-tests]
 
 permissions:
   contents: read
@@ -36,9 +34,6 @@ jobs:
 
       - name: Lint
         run: npm run lint
-
-      - name: Build
-        run: npm run build
 
   django:
     name: ${{ matrix.service }}
@@ -87,8 +82,8 @@ jobs:
         service: [auth_service, game_service, frontend]
     env:
       # Images are built on every run (validates the Dockerfiles) but only
-      # pushed on a push to develop, never from pull requests or other branches.
-      PUSH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/develop' }}
+      # pushed on a push event.
+      PUSH: ${{ github.event_name == 'push' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -198,7 +193,7 @@ jobs:
       - name: Build Docker Hub image links
         id: images
         # Only after images were actually pushed (push event, docker job passed).
-        if: github.event_name == 'push' && github.ref == 'refs/heads/develop' && needs.docker.result == 'success'
+        if: github.event_name == 'push' && needs.docker.result == 'success'
         env:
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
         run: |

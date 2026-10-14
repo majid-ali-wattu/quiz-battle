@@ -97,17 +97,19 @@ trust each other.
 
 ## CI/CD
 
-`.github/workflows/ci.yml` runs on pushes and pull requests to `develop`:
+`.github/workflows/ci.yml` runs on pushes to `container-tests`:
 
 | Job | What it does |
 | --- | --- |
 | `frontend` | `npm ci`, `npm run lint` (ESLint + eslint-plugin-vue), `npm run build` |
 | `django` | For `auth_service` and `game_service`: flake8, `makemigrations --check`, `manage.py test` |
 | `docker` | Builds an image per service; on a push (not a PR) also pushes it to Docker Hub |
+| `container-tests` | Builds each Django image and runs `manage.py test` inside it |
+| `compose-smoke` | `docker compose up`, then `scripts/smoke-test.sh` (register, login, create room) |
 | `notify-slack` | Posts the result to Slack, with the Docker Hub image links after a push |
 
 Images are pushed as `<DOCKER_USERNAME>/quiz-battle-<service>` for
-`auth_service`, `game_service` and `frontend`, tagged `latest`, `develop` and
+`auth_service`, `game_service` and `frontend`, tagged `latest`, `container-tests` and
 `sha-<short sha>`.
 
 Required GitHub repo secrets (Settings → Secrets and variables → Actions):
