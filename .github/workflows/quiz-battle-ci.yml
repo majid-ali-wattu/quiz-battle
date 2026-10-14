@@ -1,4 +1,4 @@
-name: Quiz Battle CI
+name: Quiz Battle CI Container TEST
 
 on:
   push:
