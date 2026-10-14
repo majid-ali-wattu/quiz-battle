@@ -1,0 +1,180 @@
+name: Develop CI
+
+on:
+  push:
+    branches:
+      - test
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-apps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Packages (Frontend)
+        run: |
+          cd ./frontend
+          npm ci
+
+      - name: Run Lint (Frontend)
+        run: |
+          cd ./frontend
+          npm run lint
+
+      - name: Setup Python (Auth Service)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            auth_service/requirements.txt
+            game_service/requirements.txt
+
+      - name: Install Packages (Auth Service)
+        run: |
+          cd ./auth_service
+          pip install -r requirements.txt
+          pip install flake8
+
+      - name: Run Lint (Auth Service)
+        run: |
+          cd ./auth_service
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Check migrations (Auth Service)
+        run: |
+          cd ./auth_service
+          python manage.py makemigrations --check --dry-run
+
+      - name: Run Test (Auth Service)
+        run: |
+          cd ./auth_service
+          python manage.py test
+
+      - name: Install Packages (Game Service)
+        run: |
+          cd ./game_service
+          pip install -r requirements.txt
+          pip install flake8
+
+      - name: Run Lint (Game Service)
+        run: |
+          cd ./game_service
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Check migrations (Game Service)
+        run: |
+          cd ./game_service
+          python manage.py makemigrations --check --dry-run
+
+      - name: Run Test (Game Service)
+        run: |
+          cd ./game_service
+          python manage.py test
+
+  build-and-push-docker-images:
+    runs-on: ubuntu-latest
+    needs: [test-apps]
+    timeout-minutes: 15
+    env:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Docker Login
+        run: |
+          echo "$DOCKER_TOKEN" | docker login -u "$DOCKER_USERNAME" --password-stdin
+
+      - name: Generate FE Image and Push to Docker Hub
+        run: |
+          cd ./frontend
+          docker build -t $DOCKER_USERNAME/frontend:$GITHUB_SHA .
+          docker push $DOCKER_USERNAME/frontend:$GITHUB_SHA
+
+      - name: Generate Auth Image and Push to Docker Hub
+        run: |
+          cd ./auth_service
+          docker build -t $DOCKER_USERNAME/auth_service:$GITHUB_SHA .
+          docker push $DOCKER_USERNAME/auth_service:$GITHUB_SHA
+
+      - name: Generate Game Image and Push to Docker Hub
+        run: |
+          cd ./game_service
+          docker build -t $DOCKER_USERNAME/game_service:$GITHUB_SHA .
+          docker push $DOCKER_USERNAME/game_service:$GITHUB_SHA
+
+  notify-slack:
+    runs-on: ubuntu-latest
+    needs: [test-apps, build-and-push-docker-images]
+    if: ${{ !cancelled() }}
+    timeout-minutes: 5
+
+    steps:
+      - name: Compute pipeline status
+        id: status
+        env:
+          TEST_RESULT: ${{ needs.test-apps.result }}
+          BUILD_RESULT: ${{ needs.build-and-push-docker-images.result }}
+        run: |
+          if [ "$TEST_RESULT" = "success" ] && [ "$BUILD_RESULT" = "success" ]; then
+            echo "conclusion=Success" >> "$GITHUB_OUTPUT"
+            echo "color=#2eb886" >> "$GITHUB_OUTPUT"
+          else
+            echo "conclusion=Failed (tests: $TEST_RESULT, images: $BUILD_RESULT)" >> "$GITHUB_OUTPUT"
+            echo "color=#e01e5a" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute image links
+        id: images
+        if: ${{ needs.build-and-push-docker-images.result == 'success' }}
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+        run: |
+          links=""
+          for image in frontend auth_service game_service; do
+            links="$links\\n• <https://hub.docker.com/r/$DOCKER_USERNAME/$image/tags?name=$GITHUB_SHA|$image>"
+          done
+          echo "links=\\n\\n*Images:*$links" >> "$GITHUB_OUTPUT"
+
+      - name: Send Slack notification
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "attachments": [
+                {
+                  "color": "${{ steps.status.outputs.color }}",
+                  "title": "CI Pipeline Execution: ${{ steps.status.outputs.conclusion }}",
+                  "text": "Repository: *${{ github.repository }}*\nBranch/PR: *${{ github.ref_name }}*\nTriggered by: *${{ github.actor }}*\nResult: *${{ steps.status.outputs.conclusion }}*${{ steps.images.outputs.links }}",
+                  "actions": [
+                    {
+                      "type": "button",
+                      "text": "View Run",
+                      "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
