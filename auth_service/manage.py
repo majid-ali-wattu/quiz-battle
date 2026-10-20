@@ -2,7 +2,7 @@
 import os
 import sys
 
-
+#start app
 def main():
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "auth_service.settings")
     try:
